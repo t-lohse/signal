@@ -1,34 +1,21 @@
-use crate::contact_manager::ContactManager;
-use crate::encryption::encrypt;
-use crate::server::{Server, ServerAPI};
-use surf::http::mime::JSON;
-use tokio_tungstenite::tungstenite::http::response;
+use tungstenite::{connect, Message};
 
-pub struct Client {
-    contact_manager: ContactManager,
-    server_api: ServerAPI,
-}
+fn main() {
+    env_logger::init();
 
-impl Client {
-    pub fn new() -> Self {
-        Client {
-            contact_manager: ContactManager::new(),
-            server_api: ServerAPI::new().unwrap(),
-        }
+    let (mut socket, response) = connect("ws://localhost:3012/socket").expect("Can't connect");
+
+    println!("Connected to the server");
+    println!("Response HTTP code: {}", response.status());
+    println!("Response contains the following headers:");
+    for (header, _value) in response.headers() {
+        println!("* {header}");
     }
-    pub async fn send_message(&self, message: &str) -> Result<(), Box<dyn std::error::Error>> {
-        let res = self
-            .server_api
-            .send_msg(message.to_owned(), "bob".to_owned());
-        println!("Sent message: {}", message);
-        match res.await {
-            Ok(response) => {
-                println!("Got response: {:?}", response.status());
-            }
-            Err(error) => {
-                println!("Got error: {:?}", error);
-            }
-        }
-        Ok(())
+
+    socket.send(Message::Text("Hello WebSocket".into())).unwrap();
+    loop {
+        let msg = socket.read().expect("Error reading message");
+        println!("Received: {msg}");
     }
+    // socket.close(None);
 }
