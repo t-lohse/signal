@@ -2,6 +2,7 @@ use crate::account::{Account, Device};
 use crate::database::SignalDatabase;
 use crate::error::ApiError;
 use crate::in_memory_db::InMemorySignalDatabase;
+use crate::managers::state::SignalServerState;
 use crate::postgres::PostgresDatabase;
 use anyhow::Result;
 use axum::extract::{connect_info::ConnectInfo, Host, Path, State};
@@ -13,6 +14,7 @@ use axum::routing::{any, delete, get, post, put};
 use axum::BoxError;
 use axum::{debug_handler, Json, Router};
 use common::signal_protobuf::Envelope;
+use common::web_api::authorization::BasicAuthorizationHeader;
 use common::web_api::{
     AuthorizationHeader, CreateAccountOptions, DevicePreKeyBundle, RegistrationRequest,
     SetKeyRequest, SignalMessages, UploadKeys,
@@ -33,33 +35,24 @@ use std::str::FromStr;
 
 use crate::socket::{SocketManager, ToEnvelope};
 
-#[derive(Clone, Debug)]
-struct SignalServerState<T: SignalDatabase> {
-    db: T,
-    socket_manager: SocketManager<WebSocket>,
+enum PublicKeyType {
+    Kem(kem::PublicKey),
+    Ec(PublicKey),
 }
 
-impl<T: SignalDatabase> SignalServerState<T> {
-    #[allow(dead_code)]
-    fn database(&self) -> T {
-        self.db.clone()
-    }
-}
-
-impl SignalServerState<InMemorySignalDatabase> {
-    async fn new() -> Self {
-        Self {
-            db: InMemorySignalDatabase::new(),
-            socket_manager: SocketManager::new(),
+impl PublicKeyType {
+    fn expect_kem(self) -> kem::PublicKey {
+        if let PublicKeyType::Kem(key) = self {
+            key
+        } else {
+            panic!("dev_err: expected a kem key, got an ec key")
         }
     }
-}
-
-impl SignalServerState<PostgresDatabase> {
-    async fn new() -> Self {
-        Self {
-            db: PostgresDatabase::connect().await.unwrap(),
-            socket_manager: SocketManager::new(),
+    fn expect_ec(self) -> PublicKey {
+        if let PublicKeyType::Ec(key) = self {
+            key
+        } else {
+            panic!("dev_err: expected an ec key, got a kem key")
         }
     }
 }
@@ -85,36 +78,34 @@ async fn handle_get_messages<T: SignalDatabase>(
 
 async fn handle_put_registration<T: SignalDatabase>(
     state: SignalServerState<T>,
-    auth_header: AuthorizationHeader,
+    auth_header: BasicAuthorizationHeader,
     registration: RegistrationRequest,
 ) -> Result<(), ApiError> {
     println!("Register client");
-    let uuid = Uuid::parse_str(auth_header.username()).map_err(|err| ApiError {
-        message: format!("Could not parse uuid '{}'", { auth_header.username() }),
-        status_code: StatusCode::BAD_REQUEST,
-    })?;
+    let phone_number = auth_header.username();
 
-    let account = Account::new(
-        uuid.into(),
-        Device::new(
-            0u32.into(),
-            "bob_device".into(),
-            0u32,
-            0u32,
-            "".into(),
-            "".into(),
-        ),
-        *registration.pni_identity_key(),
-        *registration.aci_identity_key(),
-    );
     state
-        .database()
-        .add_account(account)
+        .account_manager()
+        .create_account(
+            phone_number.to_owned(),
+            registration.account_attributes().to_owned(),
+            registration.aci_identity_key().to_owned(),
+            registration.pni_identity_key().to_owned(),
+            Device::new(
+                1.into(),
+                "my_device".to_owned(),
+                0,
+                0,
+                "no token".to_owned(),
+                "salt".to_owned(),
+            ),
+        )
         .await
         .map_err(|err| ApiError {
-            message: format!("Could not store user in database: {}", err),
+            message: format!("Could not create account:{}", err),
             status_code: StatusCode::INTERNAL_SERVER_ERROR,
-        })?;
+        });
+
     Ok(())
 }
 
@@ -276,7 +267,7 @@ async fn create_websocket_endpoint(
     };
     println!("`{user_agent}` at {addr} connected.");
     ws.on_upgrade(move |socket| {
-        let mut socket_manager = state.socket_manager.clone();
+        let mut socket_manager = state.socket_manager().clone();
         async move {
             socket_manager
                 .handle_socket(/*authenticated_device,*/ socket, addr)
