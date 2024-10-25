@@ -35,28 +35,6 @@ use std::str::FromStr;
 
 use crate::socket::{SocketManager, ToEnvelope};
 
-enum PublicKeyType {
-    Kem(kem::PublicKey),
-    Ec(PublicKey),
-}
-
-impl PublicKeyType {
-    fn expect_kem(self) -> kem::PublicKey {
-        if let PublicKeyType::Kem(key) = self {
-            key
-        } else {
-            panic!("dev_err: expected a kem key, got an ec key")
-        }
-    }
-    fn expect_ec(self) -> PublicKey {
-        if let PublicKeyType::Ec(key) = self {
-            key
-        } else {
-            panic!("dev_err: expected an ec key, got a kem key")
-        }
-    }
-}
-
 async fn handle_put_messages<T: SignalDatabase>(
     state: SignalServerState<T>,
     address: ProtocolAddress,
